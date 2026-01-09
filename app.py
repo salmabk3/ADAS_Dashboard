@@ -1,6 +1,7 @@
 import time
 import cv2
 import numpy as np
+import pandas as pd
 import streamlit as st
 import torch
 from ultralytics import YOLO
@@ -13,7 +14,7 @@ st.title("🚗 ADAS Dashboard — YOLOv8 + MiDaS (Streamlit Cloud)")
 st.caption("Cloud = vidéo uploadée. Pas de webcam/son. Dashboard = supervision + stats + graphes.")
 
 # ===============================
-# MODES D'ÉCLAIRAGE (depuis ton code)
+# MODES D'ÉCLAIRAGE
 # ===============================
 def apply_day(frame):
     return frame
@@ -26,12 +27,10 @@ def apply_low_light(frame):
     out = np.clip(out.astype(np.int16) + noise, 0, 255).astype(np.uint8)
     return out
 
-# NUIT AMÉLIORÉE (ta version gamma + CLAHE)
 def apply_night(frame):
     gamma = 1.8
     invGamma = 1.0 / gamma
-    table = (np.array([(i / 255.0) ** invGamma * 255 for i in range(256)])
-             .astype("uint8"))
+    table = (np.array([(i / 255.0) ** invGamma * 255 for i in range(256)]).astype("uint8"))
     out = cv2.LUT(frame, table)
     out = cv2.convertScaleAbs(out, alpha=0.85, beta=-25)
 
@@ -62,7 +61,7 @@ def pick_filter(mode):
 # ===============================
 @st.cache_resource
 def load_models():
-    model_yolo = YOLO("yolov8n.pt")  # même que ton notebook
+    model_yolo = YOLO("yolov8n.pt")
     model_depth = torch.hub.load("intel-isl/MiDaS", "MiDaS_small")
     model_depth.to("cpu").eval()
     midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
@@ -72,10 +71,7 @@ def load_models():
 model_yolo, model_depth, transform = load_models()
 
 # ===============================
-# DETECTION (reprend exactement ton idée)
-# - YOLO: conf variable (mode)
-# - MiDaS: depth normalisée
-# - distance = 1/(depth+eps) (comme ton video/webcam)
+# DETECTION
 # ===============================
 def detect_frame(frame_bgr, conf_thr=0.4, zone_y=300, red_thr=3.0, yellow_thr=6.0):
     frame_resized = cv2.resize(frame_bgr, (640, 480))
@@ -86,7 +82,6 @@ def detect_frame(frame_bgr, conf_thr=0.4, zone_y=300, red_thr=3.0, yellow_thr=6.
     # MiDaS
     img_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
     input_batch = transform(img_rgb).to("cpu")
-
     with torch.no_grad():
         prediction = model_depth(input_batch)
         depth = torch.nn.functional.interpolate(
@@ -104,7 +99,7 @@ def detect_frame(frame_bgr, conf_thr=0.4, zone_y=300, red_thr=3.0, yellow_thr=6.
 
     for r in results:
         for box in r.boxes:
-            if int(box.cls[0]) != 0:  # person
+            if int(box.cls[0]) != 0:
                 continue
 
             x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -113,7 +108,7 @@ def detect_frame(frame_bgr, conf_thr=0.4, zone_y=300, red_thr=3.0, yellow_thr=6.
             cy = max(0, min(cy, 479))
 
             depth_value = depth_norm[cy, cx]
-            distance = 1.0 / (depth_value + 1e-6)  # comme ton code vidéo/webcam
+            distance = 1.0 / (depth_value + 1e-6)
 
             pedestrian_count += 1
             min_distance = distance if min_distance is None else min(min_distance, distance)
@@ -136,7 +131,6 @@ def detect_frame(frame_bgr, conf_thr=0.4, zone_y=300, red_thr=3.0, yellow_thr=6.
                         (x1, max(15, y1 - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-    # overlays
     cv2.line(frame_resized, (0, int(zone_y)), (639, int(zone_y)), (255, 255, 255), 2)
     if danger_level == "red":
         cv2.putText(frame_resized, "⚠️ PEDESTRIAN DANGER",
@@ -148,7 +142,7 @@ def state_to_num(s):
     return {"green": 0, "yellow": 1, "red": 2}.get(s, 0)
 
 # ===============================
-# SIDEBAR PARAMS (comme votre projet)
+# SIDEBAR PARAMS
 # ===============================
 with st.sidebar:
     st.header("⚙️ Paramètres")
@@ -161,7 +155,6 @@ with st.sidebar:
 
     zone_y = st.slider("Zone proche (y2 > ...)", 100, 479, 300, 1)
 
-    # tes seuils vidéo/webcam actuels (rouge=3, jaune=6)
     red_thr = st.slider("Seuil ROUGE (m)", 1.0, 15.0, 3.0, 0.1)
     yellow_thr = st.slider("Seuil JAUNE (m)", 1.0, 25.0, 6.0, 0.1)
 
@@ -213,7 +206,6 @@ if run_btn:
         st.stop()
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-
     proc_filter = pick_filter(mode)
     conf_thr = float(pick_conf(mode))
 
@@ -242,7 +234,7 @@ if run_btn:
 
         # history
         t = processed / float(fps)
-        st.session_state.t_hist.append(t)
+        st.session_state.t_hist.append(float(t))
         st.session_state.min_d_hist.append(float(min_distance) if min_distance is not None else np.nan)
         st.session_state.state_hist.append(danger_level)
 
@@ -262,14 +254,21 @@ if run_btn:
             f"**Frames ROUGES** : {st.session_state.red_frames}"
         )
 
-        # charts (recent)
+        # ✅ CHARTS (corrigé avec DataFrame)
         N = min(250, len(st.session_state.t_hist))
         t_hist = st.session_state.t_hist[-N:]
         d_hist = st.session_state.min_d_hist[-N:]
         s_hist = [state_to_num(x) for x in st.session_state.state_hist[-N:]]
 
-        chart1_slot.line_chart({"min_distance_m": d_hist}, x=t_hist)
-        chart2_slot.line_chart({"state(0=G,1=Y,2=R)": s_hist}, x=t_hist)
+        N2 = min(len(t_hist), len(d_hist), len(s_hist))
+        df_chart = pd.DataFrame({
+            "time_s": t_hist[:N2],
+            "min_distance_m": d_hist[:N2],
+            "state": s_hist[:N2],
+        }).set_index("time_s")
+
+        chart1_slot.line_chart(df_chart[["min_distance_m"]])
+        chart2_slot.line_chart(df_chart[["state"]])
 
         processed += 1
 
