@@ -1,9 +1,9 @@
-# ADAS_Dashboard
 streamlit
 opencv-python-headless
 ultralytics
 torch
 torchvision
 numpy
+pandas
 timm
 matplotlib
